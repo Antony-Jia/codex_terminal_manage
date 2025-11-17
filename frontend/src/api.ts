@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const DEFAULT_API_BASE = "http://127.0.0.1:8001";
+const DEFAULT_API_BASE = "http://127.0.0.1:8004";
 const resolveFallbackOrigin = () => {
   if (typeof window === "undefined") {
     return DEFAULT_API_BASE;
@@ -33,12 +33,20 @@ export interface Profile {
   updated_at: string;
 }
 
-export interface SessionResponse {
+export type SessionStatus = "running" | "completed" | "stopped" | "error" | "interrupted";
+
+export interface SessionInfo {
   session_id: string;
   profile: Profile;
-  cwd: string;
+  status: SessionStatus;
+  exit_code?: number | null;
+  cwd?: string | null;
   log_path: string;
+  created_at: string;
+  finished_at?: string | null;
 }
+
+export interface SessionSummary extends SessionInfo {}
 
 export interface GitStatusItem {
   status: string;
@@ -55,6 +63,12 @@ export interface GitChanges {
 export interface LogResponse {
   session_id: string;
   content: string;
+  historical: boolean;
+  message?: string;
+}
+
+export interface SessionCreateResponse {
+  sessions: SessionInfo[];
 }
 
 const client = axios.create({
@@ -91,9 +105,14 @@ export const api = {
     return data;
   },
   deleteProfile: async (id: number) => client.delete(`/profiles/${id}`),
-  createSession: async (profileId: number) => {
-    const { data } = await client.post<SessionResponse>("/sessions", { profile_id: profileId });
+  listSessions: async () => {
+    const { data } = await client.get<SessionSummary[]>("/sessions");
     return data;
+  },
+  createSession: async (profileId: number, quantity = 1) => {
+    const body = { profile_id: profileId, quantity };
+    const { data } = await client.post<SessionCreateResponse>("/sessions", body);
+    return data.sessions;
   },
   fetchLogs: async (sessionId: string) => {
     const { data } = await client.get<LogResponse>(`/logs/${sessionId}`);
@@ -103,6 +122,7 @@ export const api = {
     const { data } = await client.get<GitChanges>(`/git_changes/${sessionId}`);
     return data;
   },
+  deleteSession: async (sessionId: string) => client.delete(`/sessions/${sessionId}`),
 };
 
 export const websocketUrl = (sessionId: string) => {

@@ -16,26 +16,102 @@ body {
   min-height: 100vh;
 }
 
+.ant-layout {
+  min-height: 100vh;
+  background: transparent;
+}
+
+.app-shell {
+  background: transparent;
+}
+
+.app-header {
+  background: #0f1c3d;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 32px;
+  box-shadow: 0 10px 30px rgba(15, 28, 61, 0.35);
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.brand-title {
+  color: #fff;
+  font-weight: 600;
+  font-size: 20px;
+}
+
+.session-sider {
+  background: transparent;
+  padding: 24px;
+}
+
+.session-card {
+  margin-bottom: 16px;
+  border-radius: 16px;
+  box-shadow: 0 15px 35px rgba(15, 28, 61, 0.1);
+}
+
+.history-card {
+  border-radius: 16px;
+  box-shadow: 0 18px 40px rgba(15, 28, 61, 0.08);
+}
+
+.history-list {
+  max-height: 420px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.session-item {
+  cursor: pointer;
+  padding: 12px 16px;
+  transition: background 0.2s ease;
+}
+
+.session-item:hover {
+  background: rgba(15, 28, 61, 0.04);
+}
+
+.session-item.active {
+  background: rgba(47, 128, 237, 0.12);
+  border-left: 3px solid #2f80ed;
+}
+
+.session-item-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.session-meta {
+  font-size: 12px;
+}
+
+.session-content {
+  padding: 24px 32px 48px;
+}
+
 .xterm-theme {
   background-color: #111a2c;
   color: #f4f4f4;
-  border-radius: 8px;
+  border-radius: 12px;
   padding: 12px;
+  min-height: 520px;
 }
 
-.ant-layout {
-  min-height: 100vh;
-}
-
-.terminal-toolbar {
+.terminal-loading,
+.git-loading {
+  width: 100%;
+  min-height: 200px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-  flex-wrap: wrap;
-}
-
-.profile-list {
-  max-height: 320px;
-  overflow-y: auto;
+  justify-content: center;
 }

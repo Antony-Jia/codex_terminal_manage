@@ -1,11 +1,11 @@
 # Codex Terminal Manage
 
-基于 FastAPI + React + Ant Design 的浏览器终端 MVP。后端通过 Poetry 管理依赖，前端采用 Vite 构建，满足 AGENTS.md 的全部要求：
+基于 FastAPI + React 构建的多终端管理工具。后端通过 Poetry 管理依赖，前端采用 Vite，满足 AGENTS.md 中“Python + React + Ant Design + UTF-8 + 美观 UI”的要求，并专门针对多终端调度做了扩展：
 
-- Python 服务：FastAPI + SQLite，使用 Poetry 维护依赖；
-- 请先执行 `conda activate terminal_manage`，再进入 `backend` 目录进行安装、测试；
-- Web 端：React + Ant Design + xterm.js，支持中文输出、命令回放、Git 状态查看；
-- Session Profile 信息持久化在 SQLite，日志以 UTF-8/ANSI 字节写入 `backend/logs/<session_id>/raw.log`。
+- 后端：FastAPI + SQLite + WebSocket，`conda activate terminal_manage && cd backend` 后使用 Poetry 安装/运行；
+- 前端：React + Ant Design + xterm.js，所有页面元素使用中英双语友好字体；
+- Session Profile、终端会话、运行状态等全部落盘至 SQLite（`backend/data/terminal_manage.db`），日志以 UTF-8/ANSI 写入 `backend/logs/<session_id>/raw.log`，即便重启也可回放；
+- “设定”抽屉集中管理所有会话配置，主界面支持一次创建多个会话并快速切换终端视图。
 
 ## 目录结构
 
@@ -56,15 +56,24 @@ npm run preview
 
 ## 功能概览
 
-1. **Session Profile 管理**：新增/删除配置，支持命令、参数、工作目录及环境变量；
-2. **终端会话**：通过 WebSocket 与 FastAPI 保持实时交互，xterm.js 显示 ANSI 彩色输出，输入命令后自动执行 Git 前后状态对比；
-3. **日志系统**：后端将原始字节写入 `raw.log`，前端可查看全文日志；
-4. **Git 状态 & Diff**：提供 REST API `GET /git_changes/{session_id}`，并在终端中以文本形式输出命令执行前后的差异；
-5. **中文体验**：全链路使用 UTF-8，前端字体覆盖「思源黑体 / 微软雅黑」等字体，避免中文乱码。
+1. **统一设定与配置模板**  
+   右上角“设定”抽屉集中展示/增删 Session Profile（命令、参数、工作目录、环境变量），支持 UTF-8 输入。
+
+2. **多终端批量创建与标签管理**  
+   主界面可按配置一键创建 1~10 个终端，左侧列表永久保存所有历史记录（状态：运行中/完成/停止/错误/中断），并会在状态变化时弹出成功提示。
+
+3. **终端实时交互 & 历史回放**  
+   xterm.js 面板用于运行中会话；历史会话自动切换成“只读回放”模式，同时在终端顶部提示“以下内容来自历史日志”以区分上次运行的残留。
+
+4. **日志与 Git 一键刷新 + 清理**  
+   `GET /logs/{session}` 接口新增 `historical` 字段，前端按钮可随时手动刷新日志/Git 状态；后台 `POST /sessions` 支持 `quantity` 批量创建，同时提供 `DELETE /sessions/{id}` 清理会话并删除对应日志文件。左侧“历史会话”列表只在用户点击“刷新”或删除后更新，避免自动刷新打断终端。
+
+5. **持久化与安全**  
+   所有信息都写入 SQLite。应用重启后，会自动把上次遗留的“running”会话标记为 `interrupted`，告知用户这些 log 来自上一次运行；日志文件仍然保留原始 ANSI 内容。
 
 ## 后续可拓展
 
-- Session 列表与历史回放；
-- 多用户/鉴权；
-- 上传命令脚本与批量执行；
-- 更细粒度的 Git 变更展示（文件 diff 预览）。
+- 增加会话终止/重启 API；
+- 接入用户鉴权与操作审计；
+- 更细粒度的 Git Diff（逐文件展开）；
+- 将会话列表与终端面板做窗口化布局，实现拖拽编排。

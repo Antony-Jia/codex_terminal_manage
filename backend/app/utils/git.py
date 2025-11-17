@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -8,15 +9,23 @@ GIT_BINARY = "git"
 
 
 async def _run_git(args: list[str], cwd: Path) -> Optional[str]:
-    process = await asyncio.create_subprocess_exec(
-        GIT_BINARY,
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=str(cwd),
-    )
-    stdout, stderr = await process.communicate()
-    if process.returncode != 0:
+    loop = asyncio.get_running_loop()
+
+    def _exec() -> tuple[int, bytes]:
+        try:
+            completed = subprocess.run(
+                [GIT_BINARY, *args],
+                cwd=str(cwd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            return completed.returncode, completed.stdout
+        except FileNotFoundError:
+            return 1, b""
+
+    return_code, stdout = await loop.run_in_executor(None, _exec)
+    if return_code != 0:
         return None
     return stdout.decode("utf-8", errors="ignore")
 

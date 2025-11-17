@@ -10,6 +10,16 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 
 
+class SessionStatus:
+    RUNNING = "running"
+    COMPLETED = "completed"
+    STOPPED = "stopped"
+    ERROR = "error"
+    INTERRUPTED = "interrupted"
+
+    FINAL_STATES = {COMPLETED, STOPPED, ERROR, INTERRUPTED}
+
+
 class SessionProfile(Base):
     __tablename__ = "session_profiles"
 
@@ -49,5 +59,8 @@ class SessionRecord(Base):
     cwd: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     log_path: Mapped[str] = mapped_column(String(500), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default=SessionStatus.RUNNING, nullable=False)
+    exit_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     profile: Mapped[SessionProfile] = relationship("SessionProfile", back_populates="sessions")

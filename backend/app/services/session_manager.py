@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Dict, Optional
 from uuid import uuid4
@@ -11,6 +12,8 @@ import subprocess
 from fastapi import WebSocket
 
 from ..core.config import get_settings
+from ..db import session_scope
+from ..models import SessionRecord, SessionStatus
 from ..utils import git
 
 settings = get_settings()
@@ -62,6 +65,10 @@ class SessionManager:
     def has_session(self, session_id: str) -> bool:
         return session_id in self._sessions
 
+    def is_active(self, session_id: str) -> bool:
+        context = self._sessions.get(session_id)
+        return bool(context and context.process and context.process.poll() is None)
+
     async def create_session(self, profile) -> SessionContext:
         session_id = str(uuid4())
         cwd = Path(profile.cwd or settings.resolved_default_cwd)
@@ -97,8 +104,6 @@ class SessionManager:
         if not context:
             return
         context.sockets.discard(websocket)
-        if not context.sockets:
-            await self.terminate_session(session_id, reason="最后一个客户端已断开")
 
     async def terminate_session(self, session_id: str, reason: Optional[str] = None) -> None:
         context = self._sessions.get(session_id)
@@ -118,8 +123,11 @@ class SessionManager:
             await loop.run_in_executor(None, _terminate)
         context.close_log()
         context.cleanup_tasks()
+        context.process = None
         if reason:
             await self._broadcast_text(context, f"\r\n{reason}\r\n")
+        await self._update_session_record(session_id, status=SessionStatus.STOPPED)
+        self._sessions.pop(session_id, None)
 
     async def _launch_process(self, context: SessionContext) -> None:
         loop = asyncio.get_running_loop()
@@ -165,9 +173,13 @@ class SessionManager:
             return
         loop = asyncio.get_running_loop()
         return_code = await loop.run_in_executor(None, context.process.wait)
+        status = SessionStatus.COMPLETED if return_code == 0 else SessionStatus.ERROR
         await self._broadcast_text(context, f"\r\nProcess finished with code {return_code}\r\n")
         context.close_log()
         context.process = None
+        context.monitor_task = None
+        await self._update_session_record(context.session_id, status=status, exit_code=return_code)
+        self._sessions.pop(context.session_id, None)
 
     def _write_log(self, context: SessionContext, data: bytes) -> None:
         if context.log_file:
@@ -230,7 +242,8 @@ class SessionManager:
                 before_snapshot = await git.get_git_status(context.cwd)
                 command_label = context.command_buffer.strip()
             context.command_buffer = ""
-        await self._write_to_process(context, char.encode("utf-8"))
+        payload = b"\r\n" if char == "\r" else char.encode("utf-8")
+        await self._write_to_process(context, payload)
         if before_snapshot is None:
             return
         await asyncio.sleep(settings.git_diff_delay)
@@ -239,8 +252,9 @@ class SessionManager:
             context.cwd_has_git = False
             return
         delta = git.diff_status(before_snapshot, after_snapshot)
-        diff_text = git.format_delta(delta, command_label)
-        await self._broadcast_text(context, diff_text + "\r\n")
+        if any(delta.values()):
+            diff_text = git.format_delta(delta, command_label)
+            await self._broadcast_text(context, diff_text + "\r\n")
 
     async def _write_to_process(self, context: SessionContext, data: bytes) -> None:
         if not data or context.process is None or context.process.stdin is None:
@@ -248,8 +262,11 @@ class SessionManager:
         loop = asyncio.get_running_loop()
 
         def _write() -> None:
-            context.process.stdin.write(data)
-            context.process.stdin.flush()
+            try:
+                context.process.stdin.write(data)
+                context.process.stdin.flush()
+            except (BrokenPipeError, OSError):
+                pass
 
         await loop.run_in_executor(None, _write)
 
@@ -264,3 +281,27 @@ class SessionManager:
     def resolve_log_path(self, session_id: str) -> Optional[Path]:
         context = self._sessions.get(session_id)
         return context.log_path if context else None
+
+    async def _update_session_record(
+        self,
+        session_id: str,
+        status: Optional[str] = None,
+        exit_code: Optional[int] = None,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+
+        def _task() -> None:
+            with session_scope() as db:
+                record = db.get(SessionRecord, session_id)
+                if not record:
+                    return
+                if status:
+                    record.status = status
+                    if status in SessionStatus.FINAL_STATES:
+                        record.finished_at = datetime.utcnow()
+                    elif status == SessionStatus.RUNNING:
+                        record.finished_at = None
+                if exit_code is not None:
+                    record.exit_code = exit_code
+
+        await loop.run_in_executor(None, _task)

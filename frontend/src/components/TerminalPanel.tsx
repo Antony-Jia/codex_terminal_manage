@@ -1,21 +1,44 @@
 import { message } from "antd";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
 import { websocketUrl } from "../api";
 
 export type TerminalStatus = "idle" | "connecting" | "connected" | "closed" | "error";
+export type TerminalMode = "idle" | "live" | "replay";
 
 interface TerminalPanelProps {
   sessionId?: string;
+  mode?: TerminalMode;
+  logContent?: string;
+  note?: string;
   onStatusChange?: (status: TerminalStatus) => void;
 }
 
-const TerminalPanel = ({ sessionId, onStatusChange }: TerminalPanelProps) => {
+const TerminalPanel = ({ sessionId, mode = "idle", logContent, note, onStatusChange }: TerminalPanelProps) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+
+  const safeWrite = useCallback((text: string) => {
+    const term = terminalRef.current;
+    if (!term) {
+      return;
+    }
+    try {
+      term.write(text);
+    } catch (error) {
+      console.warn("terminal write skipped", error);
+    }
+  }, []);
+
+  const safeWriteln = useCallback(
+    (text: string) => {
+      safeWrite(`${text}\r\n`);
+    },
+    [safeWrite],
+  );
 
   useEffect(() => {
     const term = new Terminal({
@@ -35,13 +58,23 @@ const TerminalPanel = ({ sessionId, onStatusChange }: TerminalPanelProps) => {
     term.loadAddon(fitAddon);
     if (containerRef.current) {
       term.open(containerRef.current);
-      fitAddon.fit();
+      try {
+        fitAddon.fit();
+      } catch (error) {
+        console.warn("initial fit skipped", error);
+      }
     }
-    term.writeln("欢迎使用浏览器终端，请先选择配置并创建会话。\r\n");
+    safeWriteln("欢迎使用浏览器终端，请先选择配置并创建会话。");
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    const handleResize = () => fitAddonRef.current?.fit();
+    const handleResize = () => {
+      try {
+        fitAddonRef.current?.fit();
+      } catch (error) {
+        console.warn("resize fit skipped", error);
+      }
+    };
     window.addEventListener("resize", handleResize);
     const subscription = term.onData((data) => {
       const socket = socketRef.current;
@@ -56,7 +89,7 @@ const TerminalPanel = ({ sessionId, onStatusChange }: TerminalPanelProps) => {
       socketRef.current?.close();
       term.dispose();
     };
-  }, []);
+  }, [safeWriteln]);
 
   useEffect(() => {
     const term = terminalRef.current;
@@ -64,50 +97,79 @@ const TerminalPanel = ({ sessionId, onStatusChange }: TerminalPanelProps) => {
       return;
     }
     socketRef.current?.close();
-    term.reset();
-    if (!sessionId) {
-      term.writeln("请在左侧选择环境并点击\"启动会话\"。\r\n");
-      onStatusChange?.("idle");
+    if (mode === "live" && sessionId) {
+      term.reset();
+      onStatusChange?.("connecting");
+      const ws = new WebSocket(websocketUrl(sessionId));
+      socketRef.current = ws;
+      ws.onopen = () => {
+        onStatusChange?.("connected");
+        safeWriteln(`已连接到会话 ${sessionId}`);
+      };
+      ws.onmessage = (event) => {
+        const raw = event.data;
+        if (typeof raw === "string") {
+          try {
+            const payload = JSON.parse(raw);
+            if (payload?.type === "output") {
+              safeWrite(payload.data);
+              return;
+            }
+          } catch (error) {
+            // fall through to write raw text
+          }
+          safeWrite(raw);
+        } else if (raw instanceof Blob) {
+          raw.text().then((text) => safeWrite(text));
+        } else if (raw instanceof ArrayBuffer) {
+          safeWrite(new TextDecoder().decode(raw));
+        }
+      };
+      ws.onclose = () => {
+        onStatusChange?.("closed");
+        safeWriteln("");
+        safeWriteln("连接已关闭");
+      };
+      ws.onerror = () => {
+        message.error("终端连接异常");
+        onStatusChange?.("error");
+      };
+      return () => ws.close();
+    }
+
+    onStatusChange?.("idle");
+    if (mode !== "replay") {
+      term.reset();
+      const introMessage = note || "请选择一个会话以查看输出。";
+      safeWriteln(introMessage);
+    }
+  }, [mode, sessionId, onStatusChange, note, safeWrite, safeWriteln]);
+
+  useEffect(() => {
+    if (mode !== "replay") {
       return;
     }
-    const ws = new WebSocket(websocketUrl(sessionId));
-    socketRef.current = ws;
-    onStatusChange?.("connecting");
-
-    ws.onopen = () => {
-      onStatusChange?.("connected");
-      term.writeln(`已连接到会话 ${sessionId}\r\n`);
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-        if (payload.type === "output") {
-          term.write(payload.data);
-        }
-      } catch (error) {
-        term.write(String(event.data));
-      }
-    };
-
-    ws.onclose = () => {
-      onStatusChange?.("closed");
-      term.writeln("\r\n连接已关闭\r\n");
-    };
-
-    ws.onerror = () => {
-      message.error("终端连接异常");
-      onStatusChange?.("error");
-    };
-
-    return () => {
-      ws.close();
-    };
-  }, [sessionId, onStatusChange]);
+    const term = terminalRef.current;
+    if (!term) {
+      return;
+    }
+    term.reset();
+    const introMessage = note || "以下内容为历史日志：";
+    safeWriteln(introMessage);
+    if (logContent) {
+      safeWrite(logContent);
+    } else {
+      safeWriteln("暂无日志内容。");
+    }
+  }, [mode, logContent, note, safeWrite, safeWriteln]);
 
   useEffect(() => {
     const observer = new ResizeObserver(() => {
-      fitAddonRef.current?.fit();
+      try {
+        fitAddonRef.current?.fit();
+      } catch (error) {
+        console.warn("observer fit skipped", error);
+      }
     });
     if (containerRef.current) {
       observer.observe(containerRef.current);

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, validator
+
+SessionStatusLiteral = Literal["running", "completed", "stopped", "error", "interrupted"]
 
 
 class ProfileBase(BaseModel):
@@ -45,13 +47,22 @@ class ProfileRead(ProfileBase):
 
 class SessionCreateRequest(BaseModel):
     profile_id: int
+    quantity: int = Field(default=1, ge=1, le=10)
+
+
+class SessionInfo(BaseModel):
+    session_id: str
+    profile: ProfileRead
+    status: SessionStatusLiteral
+    exit_code: Optional[int] = None
+    cwd: Optional[str] = None
+    log_path: str
+    created_at: datetime
+    finished_at: Optional[datetime] = None
 
 
 class SessionCreateResponse(BaseModel):
-    session_id: str
-    profile: ProfileRead
-    cwd: str
-    log_path: str
+    sessions: list[SessionInfo]
 
 
 class SessionRecordRead(BaseModel):
@@ -87,4 +98,17 @@ class GitDeltaBlock(BaseModel):
 class LogResponse(BaseModel):
     session_id: str
     content: str
+    historical: bool = False
+    message: Optional[str] = None
+
+
+class SessionSummary(BaseModel):
+    session_id: str
+    profile: ProfileRead
+    status: SessionStatusLiteral
+    exit_code: Optional[int] = None
+    cwd: Optional[str] = None
+    log_path: str
+    created_at: datetime
+    finished_at: Optional[datetime] = None
 
