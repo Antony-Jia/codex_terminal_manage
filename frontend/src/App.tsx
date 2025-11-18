@@ -475,6 +475,7 @@ const App = () => {
               ) : (
                 <TerminalPanel
                   sessionId={terminalMode === "live" ? selectedSession?.session_id : undefined}
+                  sessionIds={sessions.map((item) => item.session_id)}
                   mode={terminalMode}
                   note={terminalNote}
                   logContent={terminalLog}

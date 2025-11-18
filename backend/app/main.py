@@ -316,12 +316,23 @@ async def session_socket(websocket: WebSocket, session_id: str):
         return
     try:
         while True:
-            payload = await websocket.receive_json()
-            msg_type = payload.get("type")
-            if msg_type == "input":
-                await session_manager.send_input(session_id, payload.get("data", ""))
-            elif msg_type == "ping":
-                await websocket.send_json({"type": "pong"})
+            message = await websocket.receive()
+            text_data = message.get("text")
+            if text_data is not None:
+                try:
+                    payload = json.loads(text_data)
+                except json.JSONDecodeError:
+                    await session_manager.send_input(session_id, text_data)
+                    continue
+                msg_type = payload.get("type")
+                if msg_type == "input":
+                    await session_manager.send_input(session_id, payload.get("data", ""))
+                elif msg_type == "ping":
+                    await websocket.send_json({"type": "pong"})
+                continue
+            bytes_data = message.get("bytes")
+            if bytes_data is not None:
+                await session_manager.send_input(session_id, bytes_data.decode("utf-8", errors="ignore"))
     except WebSocketDisconnect:
         await session_manager.detach(session_id, websocket)
     except Exception as exc:

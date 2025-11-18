@@ -7,8 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Dict, Optional
 from uuid import uuid4
-import subprocess
 
+import winpty as pywinpty
 from fastapi import WebSocket
 
 from ..core.config import get_settings
@@ -27,9 +27,8 @@ class SessionContext:
     cwd: Path
     env: dict[str, str]
     log_path: Path
-    process: Optional[subprocess.Popen] = None
-    stdout_task: Optional[asyncio.Task] = None
-    stderr_task: Optional[asyncio.Task] = None
+    pty: Optional[pywinpty.PtyProcess] = None
+    reader_task: Optional[asyncio.Task] = None
     monitor_task: Optional[asyncio.Task] = None
     sockets: set[WebSocket] = field(default_factory=set)
     log_file: Optional[BinaryIO] = None
@@ -45,10 +44,11 @@ class SessionContext:
                 self.log_file = None
 
     def cleanup_tasks(self) -> None:
-        for task in (self.stdout_task, self.stderr_task, self.monitor_task):
+        for task in (self.reader_task, self.monitor_task):
             if task and not task.done():
                 task.cancel()
-        self.stdout_task = self.stderr_task = self.monitor_task = None
+        self.reader_task = None
+        self.monitor_task = None
 
 
 class SessionManager:
@@ -67,7 +67,7 @@ class SessionManager:
 
     def is_active(self, session_id: str) -> bool:
         context = self._sessions.get(session_id)
-        return bool(context and context.process and context.process.poll() is None)
+        return bool(context and context.pty and context.pty.isalive())
 
     async def create_session(self, profile) -> SessionContext:
         session_id = str(uuid4())
@@ -95,8 +95,9 @@ class SessionManager:
         context = self.get(session_id)
         await websocket.accept()
         context.sockets.add(websocket)
-        if context.process is None:
+        if context.pty is None:
             await self._launch_process(context)
+        await self._replay_history(websocket, context)
         return context
 
     async def detach(self, session_id: str, websocket: WebSocket) -> None:
@@ -105,25 +106,37 @@ class SessionManager:
             return
         context.sockets.discard(websocket)
 
+    async def _replay_history(self, websocket: WebSocket, context: SessionContext) -> None:
+        try:
+            if not context.log_path.exists():
+                return
+            existing = context.log_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return
+        if not existing:
+            return
+        try:
+            await websocket.send_json({"type": "output", "data": existing})
+        except Exception:
+            pass
+
     async def terminate_session(self, session_id: str, reason: Optional[str] = None) -> None:
         context = self._sessions.get(session_id)
         if not context:
             return
-        if context.process and context.process.poll() is None:
+        if context.pty:
             loop = asyncio.get_running_loop()
+
             def _terminate() -> None:
                 try:
-                    context.process.terminate()
-                    context.process.wait(timeout=2)
+                    context.pty.terminate(force=True)
                 except Exception:
-                    try:
-                        context.process.kill()
-                    except Exception:
-                        pass
+                    pass
+
             await loop.run_in_executor(None, _terminate)
         context.close_log()
         context.cleanup_tasks()
-        context.process = None
+        context.pty = None
         if reason:
             await self._broadcast_text(context, f"\r\n{reason}\r\n")
         await self._update_session_record(session_id, status=SessionStatus.STOPPED)
@@ -132,58 +145,73 @@ class SessionManager:
     async def _launch_process(self, context: SessionContext) -> None:
         loop = asyncio.get_running_loop()
 
-        def _spawn() -> subprocess.Popen:
-            return subprocess.Popen(
+        def _spawn() -> pywinpty.PtyProcess:
+            return pywinpty.PtyProcess.spawn(
                 context.command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
                 cwd=str(context.cwd),
                 env=context.env,
-                bufsize=0,
             )
 
-        context.process = await loop.run_in_executor(None, _spawn)
+        context.pty = await loop.run_in_executor(None, _spawn)
         context.log_file = open(context.log_path, "ab", buffering=0)
-        context.stdout_task = asyncio.create_task(self._pump_stream(context, context.process.stdout))
-        context.stderr_task = asyncio.create_task(self._pump_stream(context, context.process.stderr))
+        context.reader_task = asyncio.create_task(self._read_pty(context))
         context.monitor_task = asyncio.create_task(self._monitor(context))
 
-    async def _pump_stream(self, context: SessionContext, stream) -> None:
-        if stream is None:
+    async def _read_pty(self, context: SessionContext) -> None:
+        if not context.pty:
             return
         loop = asyncio.get_running_loop()
 
-        def _read() -> bytes:
+        def _read() -> str | bytes:
+            if not context.pty:
+                return ""
             try:
-                return stream.read1(1024)
-            except (AttributeError, ValueError):
-                return stream.read(1024)
+                return context.pty.read(1024)
+            except Exception:
+                return ""
 
         while True:
-            data = await loop.run_in_executor(None, _read)
-            if not data:
-                break
-            self._write_log(context, data)
-            text = data.decode("utf-8", errors="ignore")
+            chunk = await loop.run_in_executor(None, _read)
+            if not chunk:
+                if not context.pty or not context.pty.isalive():
+                    break
+                await asyncio.sleep(0.05)
+                continue
+            text = chunk.decode("utf-8", errors="ignore") if isinstance(chunk, bytes) else chunk
+            self._write_log(context, text)
             await self._broadcast_text(context, text)
 
     async def _monitor(self, context: SessionContext) -> None:
-        if not context.process:
+        if not context.pty:
             return
         loop = asyncio.get_running_loop()
-        return_code = await loop.run_in_executor(None, context.process.wait)
+
+        def _wait() -> int:
+            if not context.pty:
+                return 0
+            try:
+                context.pty.wait()
+            except Exception:
+                return context.pty.exitstatus or 1
+            return context.pty.exitstatus or 0
+
+        return_code = await loop.run_in_executor(None, _wait)
         status = SessionStatus.COMPLETED if return_code == 0 else SessionStatus.ERROR
         await self._broadcast_text(context, f"\r\nProcess finished with code {return_code}\r\n")
         context.close_log()
-        context.process = None
+        reader_task = context.reader_task
+        if reader_task and not reader_task.done():
+            reader_task.cancel()
+        context.reader_task = None
         context.monitor_task = None
+        context.pty = None
         await self._update_session_record(context.session_id, status=status, exit_code=return_code)
         self._sessions.pop(context.session_id, None)
 
-    def _write_log(self, context: SessionContext, data: bytes) -> None:
+    def _write_log(self, context: SessionContext, data: str) -> None:
         if context.log_file:
-            context.log_file.write(data)
+            context.log_file.write(data.encode("utf-8", errors="ignore"))
+            context.log_file.flush()
 
     async def _broadcast_text(self, context: SessionContext, text: str) -> None:
         payload = {"type": "output", "data": text}
@@ -195,29 +223,29 @@ class SessionManager:
 
     async def send_input(self, session_id: str, data: str) -> None:
         context = self.get(session_id)
-        if context.process is None or context.process.stdin is None:
+        if context.pty is None:
             raise RuntimeError("进程不可用，无法写入数据")
         async with context.lock:
             await self._process_input(context, data)
 
     async def _process_input(self, context: SessionContext, data: str) -> None:
-        if not data or context.process is None or context.process.stdin is None:
+        if not data or context.pty is None:
             return
-        buffer = bytearray()
+        buffer: list[str] = []
 
         async def flush_buffer() -> None:
             if buffer:
-                await self._write_to_process(context, bytes(buffer))
+                await self._write_to_pty(context, "".join(buffer))
                 buffer.clear()
 
         for char in data:
             if char in {"\u0008", "\u007f"}:  # Backspace/delete
                 context.command_buffer = context.command_buffer[:-1]
-                buffer.extend(char.encode("utf-8"))
+                buffer.append(char)
                 continue
             if char == "\u0003":  # Ctrl + C
                 context.command_buffer = ""
-                buffer.extend(char.encode("utf-8"))
+                buffer.append(char)
                 await flush_buffer()
                 continue
             if char in {"\r", "\n"}:
@@ -225,7 +253,7 @@ class SessionManager:
                 await self._handle_newline(context, char)
                 continue
             context.command_buffer += char
-            buffer.extend(char.encode("utf-8"))
+            buffer.append(char)
         await flush_buffer()
 
     async def _handle_newline(
@@ -242,8 +270,8 @@ class SessionManager:
                 before_snapshot = await git.get_git_status(context.cwd)
                 command_label = context.command_buffer.strip()
             context.command_buffer = ""
-        payload = b"\r\n" if char == "\r" else char.encode("utf-8")
-        await self._write_to_process(context, payload)
+        payload = "\r" if char == "\r" else char
+        await self._write_to_pty(context, payload)
         if before_snapshot is None:
             return
         await asyncio.sleep(settings.git_diff_delay)
@@ -256,15 +284,14 @@ class SessionManager:
             diff_text = git.format_delta(delta, command_label)
             await self._broadcast_text(context, diff_text + "\r\n")
 
-    async def _write_to_process(self, context: SessionContext, data: bytes) -> None:
-        if not data or context.process is None or context.process.stdin is None:
+    async def _write_to_pty(self, context: SessionContext, data: str) -> None:
+        if not data or context.pty is None:
             return
         loop = asyncio.get_running_loop()
 
         def _write() -> None:
             try:
-                context.process.stdin.write(data)
-                context.process.stdin.flush()
+                context.pty.write(data)
             except (BrokenPipeError, OSError):
                 pass
 

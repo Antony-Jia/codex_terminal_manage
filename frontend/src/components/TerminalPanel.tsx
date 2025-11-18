@@ -1,6 +1,6 @@
 import { message } from "antd";
-import { useCallback, useEffect, useRef } from "react";
-import { Terminal } from "xterm";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Terminal, type IDisposable } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
 import { websocketUrl } from "../api";
 
@@ -9,175 +9,335 @@ export type TerminalMode = "idle" | "live" | "replay";
 
 interface TerminalPanelProps {
   sessionId?: string;
+  sessionIds?: string[];
   mode?: TerminalMode;
   logContent?: string;
   note?: string;
   onStatusChange?: (status: TerminalStatus) => void;
 }
 
-const TerminalPanel = ({ sessionId, mode = "idle", logContent, note, onStatusChange }: TerminalPanelProps) => {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const terminalRef = useRef<Terminal | null>(null);
-  const fitAddonRef = useRef<FitAddon | null>(null);
-  const socketRef = useRef<WebSocket | null>(null);
+interface LiveTerminalProps {
+  sessionId?: string;
+  sessionIds?: string[];
+  note?: string;
+  onStatusChange?: (status: TerminalStatus) => void;
+}
 
-  const safeWrite = useCallback((text: string) => {
-    const term = terminalRef.current;
-    if (!term) {
+interface ReplayTerminalProps {
+  logContent?: string;
+  note?: string;
+}
+
+interface SessionRuntime {
+  id: string;
+  term: Terminal;
+  fitAddon: FitAddon;
+  socket: WebSocket | null;
+  disposables: IDisposable[];
+  observer?: ResizeObserver;
+  attached: boolean;
+  container: HTMLDivElement | null;
+  status: TerminalStatus;
+}
+
+const safeWrite = (term: Terminal, text: string) => {
+  if (!text) {
+    return;
+  }
+  try {
+    term.write(text);
+  } catch (error) {
+    console.warn("terminal write skipped", error);
+  }
+};
+
+const createRuntime = (id: string): SessionRuntime => {
+  const term = new Terminal({
+    cursorBlink: true,
+    fontSize: 14,
+    scrollback: 5000,
+    fontFamily: '"Cascadia Code", "Fira Code", monospace',
+    convertEol: false,
+    theme: {
+      background: "#0f172a",
+      foreground: "#f8fafc",
+      black: "#1e293b",
+      green: "#22c55e",
+      blue: "#38bdf8",
+    },
+  });
+  const fitAddon = new FitAddon();
+  term.loadAddon(fitAddon);
+  return {
+    id,
+    term,
+    fitAddon,
+    socket: null,
+    disposables: [],
+    observer: undefined,
+    attached: false,
+    container: null,
+    status: "idle",
+  };
+};
+
+const TerminalPanel = ({
+  sessionId,
+  sessionIds = [],
+  mode = "idle",
+  logContent,
+  note,
+  onStatusChange,
+}: TerminalPanelProps) => {
+  useEffect(() => {
+    if (!onStatusChange) {
       return;
     }
-    try {
-      term.write(text);
-    } catch (error) {
-      console.warn("terminal write skipped", error);
+    if (mode === "replay") {
+      onStatusChange("closed");
+    } else if (mode !== "live") {
+      onStatusChange("idle");
+    }
+  }, [mode, onStatusChange]);
+
+  if (mode === "replay") {
+    return <ReplayTerminal logContent={logContent} note={note} />;
+  }
+  return (
+    <LiveTerminalManager sessionId={sessionId} sessionIds={sessionIds} note={note} onStatusChange={onStatusChange} />
+  );
+};
+
+const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange }: LiveTerminalProps) => {
+  const runtimesRef = useRef<Map<string, SessionRuntime>>(new Map());
+  const [mountedSessions, setMountedSessions] = useState<string[]>([]);
+  const activeIdRef = useRef<string | undefined>(sessionId);
+  const statusCallbackRef = useRef(onStatusChange);
+
+  useEffect(() => {
+    activeIdRef.current = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
+    statusCallbackRef.current = onStatusChange;
+  }, [onStatusChange]);
+
+  const updateStatus = useCallback((id: string, status: TerminalStatus) => {
+    const runtime = runtimesRef.current.get(id);
+    if (!runtime) {
+      return;
+    }
+    runtime.status = status;
+    if (activeIdRef.current === id) {
+      statusCallbackRef.current?.(status);
     }
   }, []);
 
-  const safeWriteln = useCallback(
-    (text: string) => {
-      safeWrite(`${text}\r\n`);
+  const handleIncoming = useCallback((runtime: SessionRuntime, raw: MessageEvent["data"]) => {
+    const applyText = (text?: string) => {
+      if (!text) {
+        return;
+      }
+      safeWrite(runtime.term, text);
+    };
+    if (typeof raw === "string") {
+      try {
+        const payload = JSON.parse(raw);
+        if (payload?.type === "output") {
+          applyText(payload.data);
+          return;
+        }
+      } catch {
+        // fall through to raw text write
+      }
+      applyText(raw);
+      return;
+    }
+    if (raw instanceof Blob) {
+      void raw.text().then((text) => applyText(text));
+      return;
+    }
+    if (raw instanceof ArrayBuffer) {
+      applyText(new TextDecoder().decode(raw));
+    }
+  }, []);
+
+  const connectRuntime = useCallback(
+    (runtime: SessionRuntime) => {
+      if (runtime.socket && runtime.socket.readyState !== WebSocket.CLOSED && runtime.socket.readyState !== WebSocket.CLOSING) {
+        return;
+      }
+      const socket = new WebSocket(websocketUrl(runtime.id));
+      runtime.socket = socket;
+      updateStatus(runtime.id, "connecting");
+      socket.onopen = () => {
+        updateStatus(runtime.id, "connected");
+      };
+      socket.onmessage = (event) => handleIncoming(runtime, event.data);
+      socket.onclose = () => {
+        runtime.socket = null;
+        updateStatus(runtime.id, "closed");
+      };
+      socket.onerror = () => {
+        runtime.socket = null;
+        message.error("终端连接异常");
+        updateStatus(runtime.id, "error");
+      };
+      if (runtime.disposables.length === 0) {
+        const disposable = runtime.term.onData((data) => {
+          if (runtime.socket?.readyState === WebSocket.OPEN) {
+            runtime.socket.send(data);
+          }
+        });
+        runtime.disposables.push(disposable);
+      }
     },
-    [safeWrite],
+    [handleIncoming, updateStatus],
   );
 
-  useEffect(() => {
-    const term = new Terminal({
-      cursorBlink: true,
-      fontSize: 14,
-      fontFamily: '"Cascadia Code", "Fira Code", monospace',
-      convertEol: true,
-      theme: {
-        background: "#0f172a",
-        foreground: "#f8fafc",
-        black: "#1e293b",
-        green: "#22c55e",
-        blue: "#38bdf8",
-      },
-    });
-    const fitAddon = new FitAddon();
-    term.loadAddon(fitAddon);
-    if (containerRef.current) {
-      term.open(containerRef.current);
-      try {
-        fitAddon.fit();
-      } catch (error) {
-        console.warn("initial fit skipped", error);
+  const ensureRuntime = useCallback(
+    (id: string) => {
+      let runtime = runtimesRef.current.get(id);
+      if (!runtime) {
+        runtime = createRuntime(id);
+        runtimesRef.current.set(id, runtime);
+        setMountedSessions((prev) => (prev.includes(id) ? prev : [...prev, id]));
       }
-    }
-    safeWriteln("欢迎使用浏览器终端，请先选择配置并创建会话。");
-    terminalRef.current = term;
-    fitAddonRef.current = fitAddon;
+      connectRuntime(runtime);
+      return runtime;
+    },
+    [connectRuntime],
+  );
 
-    const handleResize = () => {
-      try {
-        fitAddonRef.current?.fit();
-      } catch (error) {
-        console.warn("resize fit skipped", error);
-      }
-    };
-    window.addEventListener("resize", handleResize);
-    const subscription = term.onData((data) => {
-      const socket = socketRef.current;
-      if (socket?.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: "input", data }));
-      }
-    });
-
-    return () => {
-      subscription.dispose();
-      window.removeEventListener("resize", handleResize);
-      socketRef.current?.close();
-      term.dispose();
-    };
-  }, [safeWriteln]);
-
-  useEffect(() => {
-    const term = terminalRef.current;
-    if (!term) {
+  const disposeRuntime = useCallback((id: string) => {
+    const runtime = runtimesRef.current.get(id);
+    if (!runtime) {
       return;
     }
-    socketRef.current?.close();
-    if (mode === "live" && sessionId) {
-      term.reset();
-      onStatusChange?.("connecting");
-      const ws = new WebSocket(websocketUrl(sessionId));
-      socketRef.current = ws;
-      ws.onopen = () => {
-        onStatusChange?.("connected");
-        safeWriteln(`已连接到会话 ${sessionId}`);
-      };
-      ws.onmessage = (event) => {
-        const raw = event.data;
-        if (typeof raw === "string") {
-          try {
-            const payload = JSON.parse(raw);
-            if (payload?.type === "output") {
-              safeWrite(payload.data);
-              return;
-            }
-          } catch (error) {
-            // fall through to write raw text
-          }
-          safeWrite(raw);
-        } else if (raw instanceof Blob) {
-          raw.text().then((text) => safeWrite(text));
-        } else if (raw instanceof ArrayBuffer) {
-          safeWrite(new TextDecoder().decode(raw));
-        }
-      };
-      ws.onclose = () => {
-        onStatusChange?.("closed");
-        safeWriteln("");
-        safeWriteln("连接已关闭");
-      };
-      ws.onerror = () => {
-        message.error("终端连接异常");
-        onStatusChange?.("error");
-      };
-      return () => ws.close();
-    }
+    runtime.socket?.close();
+    runtime.disposables.forEach((item) => item.dispose());
+    runtime.observer?.disconnect();
+    runtime.term.dispose();
+    runtimesRef.current.delete(id);
+  }, []);
 
-    onStatusChange?.("idle");
-    if (mode !== "replay") {
-      term.reset();
-      const introMessage = note || "请选择一个会话以查看输出。";
-      safeWriteln(introMessage);
-    }
-  }, [mode, sessionId, onStatusChange, note, safeWrite, safeWriteln]);
-
-  useEffect(() => {
-    if (mode !== "replay") {
+  const attachContainer = useCallback((id: string, node: HTMLDivElement | null) => {
+    const runtime = runtimesRef.current.get(id);
+    if (!runtime) {
       return;
     }
-    const term = terminalRef.current;
-    if (!term) {
+    runtime.container = node;
+    runtime.observer?.disconnect();
+    runtime.observer = undefined;
+    if (!node) {
       return;
     }
-    term.reset();
-    const introMessage = note || "以下内容为历史日志：";
-    safeWriteln(introMessage);
-    if (logContent) {
-      safeWrite(logContent);
-    } else {
-      safeWriteln("暂无日志内容。");
+    if (!runtime.attached) {
+      runtime.term.open(node);
+      runtime.attached = true;
     }
-  }, [mode, logContent, note, safeWrite, safeWriteln]);
-
-  useEffect(() => {
+    try {
+      runtime.fitAddon.fit();
+    } catch (error) {
+      console.warn("fit skipped", error);
+    }
     const observer = new ResizeObserver(() => {
       try {
-        fitAddonRef.current?.fit();
+        runtime.fitAddon.fit();
       } catch (error) {
         console.warn("observer fit skipped", error);
       }
     });
-    if (containerRef.current) {
-      observer.observe(containerRef.current);
-    }
-    return () => observer.disconnect();
+    runtime.observer = observer;
+    observer.observe(node);
   }, []);
 
-  return <div ref={containerRef} style={{ width: "100%", height: 520 }} className="xterm-theme" />;
+  useEffect(() => {
+    if (sessionId) {
+      ensureRuntime(sessionId);
+    } else {
+      statusCallbackRef.current?.("idle");
+    }
+  }, [ensureRuntime, sessionId]);
+
+  useEffect(() => {
+    if (!sessionIds.length) {
+      const ids = Array.from(runtimesRef.current.keys());
+      ids.forEach(disposeRuntime);
+      setMountedSessions([]);
+      statusCallbackRef.current?.("idle");
+      return;
+    }
+    const allowed = new Set(sessionIds);
+    let removed = false;
+    runtimesRef.current.forEach((_runtime, id) => {
+      if (!allowed.has(id)) {
+        disposeRuntime(id);
+        removed = true;
+      }
+    });
+    if (removed) {
+      setMountedSessions((prev) => prev.filter((id) => allowed.has(id)));
+    }
+  }, [disposeRuntime, sessionIds]);
+
+  useEffect(
+    () => () => {
+      const ids = Array.from(runtimesRef.current.keys());
+      ids.forEach(disposeRuntime);
+    },
+    [disposeRuntime],
+  );
+
+  useEffect(() => {
+    if (!sessionId) {
+      return;
+    }
+    const runtime = runtimesRef.current.get(sessionId);
+    if (!runtime) {
+      return;
+    }
+    runtime.term.focus();
+    requestAnimationFrame(() => {
+      try {
+        runtime.fitAddon.fit();
+      } catch (error) {
+        console.warn("active fit skipped", error);
+      }
+    });
+  }, [sessionId]);
+
+  const showPlaceholder = !sessionId || mountedSessions.length === 0;
+
+  return (
+    <div className="xterm-theme live-terminal-wrapper">
+      <div className="terminal-stack">
+        {mountedSessions.map((id) => (
+          <div
+            key={id}
+            className="terminal-instance"
+            data-active={sessionId === id}
+            ref={(node) => attachContainer(id, node)}
+          />
+        ))}
+        {showPlaceholder && (
+          <div className="terminal-placeholder">
+            <p>{note || "请选择一个会话以查看输出。"}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const ReplayTerminal = ({ logContent, note }: ReplayTerminalProps) => {
+  const tip = note || "以下内容为历史日志：";
+  return (
+    <div className="xterm-theme terminal-replay-panel">
+      <div className="terminal-replay-note">{tip}</div>
+      <pre className="terminal-replay-content">{logContent || "暂无日志内容。"}</pre>
+    </div>
+  );
 };
 
 export default TerminalPanel;
