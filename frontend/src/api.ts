@@ -118,6 +118,7 @@ export const api = {
     const { data } = await client.get<LogResponse>(`/logs/${sessionId}`);
     return data;
   },
+  clearLogs: async (sessionId: string) => client.delete(`/logs/${sessionId}`),
   fetchGitChanges: async (sessionId: string) => {
     const { data } = await client.get<GitChanges>(`/git_changes/${sessionId}`);
     return data;

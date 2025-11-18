@@ -126,11 +126,15 @@ body {
   position: relative;
   width: 100%;
   height: 520px;
+  overflow: hidden;
 }
 
 .terminal-instance {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
 }
 
 .terminal-instance[data-active="false"] {
@@ -150,27 +154,8 @@ body {
   padding: 16px;
 }
 
-.terminal-replay-panel {
-  min-height: 520px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.terminal-replay-note {
-  color: #94a3b8;
-  font-size: 13px;
-}
-
-.terminal-replay-content {
-  flex: 1;
-  margin: 0;
-  white-space: pre-wrap;
-  font-family: "Cascadia Code", "Fira Code", monospace;
-  font-size: 13px;
-  color: #f8fafc;
-  background: #0f172a;
-  padding: 12px;
-  border-radius: 8px;
-  overflow-y: auto;
+.terminal-replay-wrapper {
+  width: 100%;
+  height: 520px;
+  border-radius: 12px;
 }

@@ -2,7 +2,7 @@ import { message } from "antd";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal, type IDisposable } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
-import { websocketUrl } from "../api";
+import { api, websocketUrl } from "../api";
 
 export type TerminalStatus = "idle" | "connecting" | "connected" | "closed" | "error";
 export type TerminalMode = "idle" | "live" | "replay";
@@ -139,6 +139,14 @@ const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange 
         return;
       }
       safeWrite(runtime.term, text);
+      // 自动滚动到底部,防止输入内容上移
+      requestAnimationFrame(() => {
+        try {
+          runtime.term.scrollToBottom();
+        } catch (error) {
+          console.warn("scroll to bottom skipped", error);
+        }
+      });
     };
     if (typeof raw === "string") {
       try {
@@ -187,6 +195,13 @@ const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange 
         const disposable = runtime.term.onData((data) => {
           if (runtime.socket?.readyState === WebSocket.OPEN) {
             runtime.socket.send(data);
+            requestAnimationFrame(() => {
+              try {
+                runtime.term.scrollToBottom();
+              } catch (error) {
+                console.warn("scroll to bottom skipped", error);
+              }
+            });
           }
         });
         runtime.disposables.push(disposable);
@@ -195,19 +210,15 @@ const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange 
     [handleIncoming, updateStatus],
   );
 
-  const ensureRuntime = useCallback(
-    (id: string) => {
-      let runtime = runtimesRef.current.get(id);
-      if (!runtime) {
-        runtime = createRuntime(id);
-        runtimesRef.current.set(id, runtime);
-        setMountedSessions((prev) => (prev.includes(id) ? prev : [...prev, id]));
-      }
-      connectRuntime(runtime);
-      return runtime;
-    },
-    [connectRuntime],
-  );
+  const ensureRuntime = useCallback((id: string) => {
+    let runtime = runtimesRef.current.get(id);
+    if (!runtime) {
+      runtime = createRuntime(id);
+      runtimesRef.current.set(id, runtime);
+      setMountedSessions((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    }
+    return runtime;
+  }, []);
 
   const disposeRuntime = useCallback((id: string) => {
     const runtime = runtimesRef.current.get(id);
@@ -253,12 +264,45 @@ const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange 
   }, []);
 
   useEffect(() => {
-    if (sessionId) {
-      ensureRuntime(sessionId);
-    } else {
-      statusCallbackRef.current?.("idle");
-    }
-  }, [ensureRuntime, sessionId]);
+    let cancelled = false;
+    const hydrateAndConnect = async () => {
+      if (!sessionId) {
+        statusCallbackRef.current?.("idle");
+        return;
+      }
+      const runtime = ensureRuntime(sessionId);
+      try {
+        const { content } = await api.fetchLogs(sessionId);
+        if (cancelled) {
+          return;
+        }
+        if (content) {
+          runtime.term.reset();
+          safeWrite(runtime.term, content);
+          requestAnimationFrame(() => {
+            try {
+              runtime.fitAddon.fit();
+              runtime.term.scrollToBottom();
+            } catch (error) {
+              console.warn("history fit skipped", error);
+            }
+          });
+        } else {
+          runtime.term.reset();
+        }
+      } catch (error) {
+        console.warn("load history failed", error);
+      } finally {
+        if (!cancelled) {
+          connectRuntime(runtime);
+        }
+      }
+    };
+    hydrateAndConnect();
+    return () => {
+      cancelled = true;
+    };
+  }, [connectRuntime, ensureRuntime, sessionId]);
 
   useEffect(() => {
     if (!sessionIds.length) {
@@ -331,13 +375,78 @@ const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange 
 };
 
 const ReplayTerminal = ({ logContent, note }: ReplayTerminalProps) => {
-  const tip = note || "以下内容为历史日志：";
-  return (
-    <div className="xterm-theme terminal-replay-panel">
-      <div className="terminal-replay-note">{tip}</div>
-      <pre className="terminal-replay-content">{logContent || "暂无日志内容。"}</pre>
-    </div>
-  );
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
+
+  useEffect(() => {
+    const term = new Terminal({
+      cursorBlink: false,
+      disableStdin: true,
+      scrollback: 5000,
+      fontSize: 14,
+      fontFamily: '"Cascadia Code", "Fira Code", monospace',
+      convertEol: false,
+      theme: {
+        background: "#0f172a",
+        foreground: "#f8fafc",
+        black: "#1e293b",
+        green: "#22c55e",
+        blue: "#38bdf8",
+      },
+    });
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    termRef.current = term;
+    fitRef.current = fitAddon;
+    if (containerRef.current) {
+      term.open(containerRef.current);
+      try {
+        fitAddon.fit();
+      } catch (error) {
+        console.warn("replay fit skipped", error);
+      }
+    }
+    const observer = new ResizeObserver(() => {
+      try {
+        fitAddon.fit();
+      } catch (error) {
+        console.warn("replay observer fit skipped", error);
+      }
+    });
+    if (containerRef.current) {
+      observer.observe(containerRef.current);
+    }
+    return () => {
+      observer.disconnect();
+      term.dispose();
+    };
+  }, []);
+
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) {
+      return;
+    }
+    term.reset();
+    const intro = note ? `${note}\r\n\r\n` : "以下内容为历史日志：\r\n\r\n";
+    safeWrite(term, intro);
+    if (logContent) {
+      safeWrite(term, logContent);
+    } else {
+      safeWrite(term, "暂无日志内容。");
+    }
+    requestAnimationFrame(() => {
+      try {
+        fitRef.current?.fit();
+        term.scrollToBottom();
+      } catch (error) {
+        console.warn("replay resize skipped", error);
+      }
+    });
+  }, [logContent, note]);
+
+  return <div ref={containerRef} className="xterm-theme terminal-replay-wrapper" />;
 };
 
 export default TerminalPanel;

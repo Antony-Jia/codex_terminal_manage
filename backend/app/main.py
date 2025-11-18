@@ -260,11 +260,23 @@ def fetch_log(session_id: str, db: Session = Depends(get_db)):
         log_file = Path(record.log_path)
         if not log_file.exists():
             raise HTTPException(status_code=404, detail="日志文件不存在")
-        content = log_file.read_text(encoding="utf-8", errors="ignore")
+        content = log_file.read_bytes().decode("utf-8", errors="ignore")
     active = session_manager.is_active(session_id)
     historical = record.status != SessionStatus.RUNNING or not active
     message = "以下内容来自历史日志，仅供回放。" if historical else None
     return LogResponse(session_id=session_id, content=content, historical=historical, message=message)
+
+
+@app.delete("/logs/{session_id}", status_code=204)
+async def clear_log(session_id: str, db: Session = Depends(get_db)):
+    record = db.get(SessionRecord, session_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Session 未找到")
+    log_path = Path(record.log_path)
+    if not log_path.exists():
+        return Response(status_code=204)
+    await session_manager.clear_log(session_id, log_path)
+    return Response(status_code=204)
 
 
 @app.delete("/sessions/{session_id}", status_code=204)

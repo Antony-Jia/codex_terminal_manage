@@ -97,7 +97,6 @@ class SessionManager:
         context.sockets.add(websocket)
         if context.pty is None:
             await self._launch_process(context)
-        await self._replay_history(websocket, context)
         return context
 
     async def detach(self, session_id: str, websocket: WebSocket) -> None:
@@ -106,19 +105,22 @@ class SessionManager:
             return
         context.sockets.discard(websocket)
 
-    async def _replay_history(self, websocket: WebSocket, context: SessionContext) -> None:
-        try:
-            if not context.log_path.exists():
-                return
-            existing = context.log_path.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            return
-        if not existing:
-            return
-        try:
-            await websocket.send_json({"type": "output", "data": existing})
-        except Exception:
-            pass
+    async def clear_log(self, session_id: str, log_path: Path) -> None:
+        context = self._sessions.get(session_id)
+        loop = asyncio.get_running_loop()
+
+        def _truncate_active() -> None:
+            target = context.log_file if context else None
+            if target:
+                target.seek(0)
+                target.truncate()
+            else:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_path.write_bytes(b"")
+
+        await loop.run_in_executor(None, _truncate_active)
+        if context:
+            await self._broadcast_text(context, "\r\n[日志已清空]\r\n")
 
     async def terminate_session(self, session_id: str, reason: Optional[str] = None) -> None:
         context = self._sessions.get(session_id)

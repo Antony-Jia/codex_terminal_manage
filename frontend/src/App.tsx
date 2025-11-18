@@ -71,6 +71,7 @@ const App = () => {
   const [gitLoading, setGitLoading] = useState(false);
   const [logState, setLogState] = useState<LogResponse | null>(null);
   const [logLoading, setLogLoading] = useState(false);
+  const [clearingLogSessionId, setClearingLogSessionId] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [historyMode, setHistoryMode] = useState<"all" | "active">("all");
   const statusHistoryRef = useRef<Record<string, SessionStatus>>({});
@@ -123,6 +124,19 @@ const App = () => {
       message.error("加载配置失败，请检查后端服务");
     } finally {
       setProfilesLoading(false);
+    }
+  };
+
+  const handleClearLog = async (sessionId: string) => {
+    try {
+      setClearingLogSessionId(sessionId);
+      await api.clearLogs(sessionId);
+      setLogState((prev) => (prev && prev.session_id === sessionId ? { ...prev, content: "" } : prev));
+      message.success("日志已清空");
+    } catch (error) {
+      message.error("清空日志失败");
+    } finally {
+      setClearingLogSessionId(null);
     }
   };
 
@@ -467,6 +481,22 @@ const App = () => {
                   >
                     刷新 Git
                   </Button>
+                  <Popconfirm
+                    title="确定清空该会话的历史输出？"
+                    okText="清空"
+                    cancelText="取消"
+                    onConfirm={() => selectedSession && void handleClearLog(selectedSession.session_id)}
+                    disabled={!selectedSession}
+                  >
+                    <Button
+                      danger
+                      icon={<DeleteOutlined />}
+                      loading={selectedSession ? clearingLogSessionId === selectedSession.session_id : false}
+                      disabled={!selectedSession}
+                    >
+                      清空历史
+                    </Button>
+                  </Popconfirm>
                 </Space>
               }
             >
