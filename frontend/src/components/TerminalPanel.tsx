@@ -257,23 +257,10 @@ const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange 
     if (!runtime.attached) {
       runtime.term.open(node);
       runtime.attached = true;
-      // 设置textarea的样式，防止滚动跳转
+      // 设置 textarea 的 scrollMargin，避免浏览器因聚焦自动滚动页面
       const textarea = runtime.term.textarea;
       if (textarea) {
-        textarea.style.scrollMargin = '0px';
-        textarea.style.position = 'absolute';
-        // 监听textarea的focus事件，阻止页面滚动
-        textarea.addEventListener('focus', (e) => {
-          e.preventDefault();
-          // 保持terminal内部滚动到底部
-          setTimeout(() => {
-            try {
-              runtime.term.scrollToBottom();
-            } catch (error) {
-              console.warn('scroll on focus skipped', error);
-            }
-          }, 0);
-        }, { passive: false });
+        textarea.style.scrollMargin = "0px";
       }
     }
     try {
@@ -394,20 +381,22 @@ const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange 
 
   return (
     <div className="xterm-theme live-terminal-wrapper">
-      <div className="terminal-stack">
-        {mountedSessions.map((id) => (
-          <div
-            key={id}
-            className="terminal-instance"
-            data-active={sessionId === id}
-            ref={(node) => attachContainer(id, node)}
-          />
-        ))}
-        {showPlaceholder && (
-          <div className="terminal-placeholder">
-            <p>{note || "请选择一个会话以查看输出。"}</p>
-          </div>
-        )}
+      <div className="terminal-shell">
+        <div className="terminal-stack">
+          {mountedSessions.map((id) => (
+            <div
+              key={id}
+              className="terminal-instance"
+              data-active={sessionId === id}
+              ref={(node) => attachContainer(id, node)}
+            />
+          ))}
+          {showPlaceholder && (
+            <div className="terminal-placeholder">
+              <p>{note || "请选择一个会话以查看输出。"}</p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -482,7 +471,13 @@ const ReplayTerminal = ({ logContent, note }: ReplayTerminalProps) => {
     });
   }, [logContent, note]);
 
-  return <div ref={containerRef} className="xterm-theme terminal-replay-wrapper" />;
+  return (
+    <div className="xterm-theme terminal-replay-wrapper">
+      <div className="terminal-shell">
+        <div ref={containerRef} className="terminal-replay-canvas" />
+      </div>
+    </div>
+  );
 };
 
 export default TerminalPanel;

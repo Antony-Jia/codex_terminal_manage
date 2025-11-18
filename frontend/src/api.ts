@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const DEFAULT_API_BASE = "http://127.0.0.1:8004";
+const DEFAULT_API_BASE = "http://127.0.0.1:8000";
 const resolveFallbackOrigin = () => {
   if (typeof window === "undefined") {
     return DEFAULT_API_BASE;

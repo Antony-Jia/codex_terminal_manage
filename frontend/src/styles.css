@@ -104,8 +104,12 @@ body {
   background-color: #111a2c;
   color: #f4f4f4;
   border-radius: 12px;
-  padding: 12px;
   min-height: 520px;
+}
+
+.terminal-shell {
+  padding: 12px;
+  height: 100%;
 }
 
 .terminal-loading,
@@ -126,10 +130,9 @@ body {
 .terminal-stack {
   position: relative;
   width: 100%;
-  height: 600px;
+  height: 100%;
   overflow: hidden;
   scroll-margin: 0;
-  contain: layout style paint;
 }
 
 .terminal-instance {
@@ -164,13 +167,15 @@ body {
   border-radius: 12px;
 }
 
-/* 防止xterm textarea聚焦时触发页面滚动 */
+.terminal-replay-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+/* 防止 xterm textarea 聚焦时触发页面滚动：只重置 scroll-margin，
+   让 xterm 自己管理 position/top/left 等定位属性 */
 .xterm-helper-textarea {
-  position: absolute !important;
   scroll-margin: 0 !important;
-  scroll-margin-block: 0 !important;
-  scroll-margin-inline: 0 !important;
-  overflow-anchor: none !important;
 }
 
 /* 防止xterm屏幕区域触发滚动 */

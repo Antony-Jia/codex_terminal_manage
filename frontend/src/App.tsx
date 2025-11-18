@@ -116,11 +116,13 @@ const App = () => {
     try {
       setProfilesLoading(true);
       const data = await api.fetchProfiles();
-      setProfiles(data);
+      setProfiles(Array.isArray(data) ? data : []);
       if (!sessionProfileId && data.length) {
         setSessionProfileId(data[0].id);
       }
     } catch (error) {
+      console.error("加载配置失败:", error);
+      setProfiles([]);
       message.error("加载配置失败，请检查后端服务");
     } finally {
       setProfilesLoading(false);
