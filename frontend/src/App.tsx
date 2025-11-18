@@ -346,6 +346,38 @@ const App = () => {
       </Header>
       <Layout>
         <Sider width={420} className="session-sider">
+          <Card title="启动新会话" className="session-card" size="small">
+            <Space direction="vertical" style={{ width: "100%" }}>
+              <Select
+                placeholder="选择启动配置"
+                options={profileOptions}
+                value={sessionProfileId}
+                loading={profilesLoading}
+                onChange={(value) => setSessionProfileId(value)}
+                allowClear
+                style={{ width: "100%" }}
+              />
+              <Space align="center" style={{ width: "100%", justifyContent: "space-between" }}>
+                <Text type="secondary">数量</Text>
+                <InputNumber
+                  min={1}
+                  max={10}
+                  value={sessionQuantity}
+                  onChange={(value) => setSessionQuantity(Number(value) || 1)}
+                  style={{ width: 220 }}
+                />
+              </Space>
+              <Button
+                type="primary"
+                block
+                icon={<AppstoreAddOutlined />}
+                loading={creatingSessions}
+                onClick={() => void handleCreateSessions()}
+              >
+                启动终端
+              </Button>
+            </Space>
+          </Card>
           <Card
             title="历史会话记录"
             className="session-card history-card"
@@ -417,36 +449,6 @@ const App = () => {
                 />
               </Spin>
             </div>
-          </Card>
-          <Card title="启动新会话" className="session-card" size="small">
-            <Space direction="vertical" style={{ width: "100%" }}>
-              <Select
-                placeholder="选择启动配置"
-                options={profileOptions}
-                value={sessionProfileId}
-                loading={profilesLoading}
-                onChange={(value) => setSessionProfileId(value)}
-                allowClear
-              />
-              <Space align="center" style={{ width: "100%", justifyContent: "space-between" }}>
-                <Text type="secondary">数量</Text>
-                <InputNumber
-                  min={1}
-                  max={10}
-                  value={sessionQuantity}
-                  onChange={(value) => setSessionQuantity(Number(value) || 1)}
-                />
-              </Space>
-              <Button
-                type="primary"
-                block
-                icon={<AppstoreAddOutlined />}
-                loading={creatingSessions}
-                onClick={() => void handleCreateSessions()}
-              >
-                启动终端
-              </Button>
-            </Space>
           </Card>
         </Sider>
         <Content className="session-content">
