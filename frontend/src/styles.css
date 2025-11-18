@@ -118,15 +118,18 @@ body {
 }
 
 .live-terminal-wrapper {
-  min-height: 520px;
+  height: 600px;
   border-radius: 12px;
+  position: relative;
 }
 
 .terminal-stack {
   position: relative;
   width: 100%;
-  height: 520px;
+  height: 600px;
   overflow: hidden;
+  scroll-margin: 0;
+  contain: layout style paint;
 }
 
 .terminal-instance {
@@ -135,6 +138,7 @@ body {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  overflow-anchor: none;
 }
 
 .terminal-instance[data-active="false"] {
@@ -156,6 +160,29 @@ body {
 
 .terminal-replay-wrapper {
   width: 100%;
-  height: 520px;
+  height: 600px;
   border-radius: 12px;
+}
+
+/* 防止xterm textarea聚焦时触发页面滚动 */
+.xterm-helper-textarea {
+  position: absolute !important;
+  scroll-margin: 0 !important;
+  scroll-margin-block: 0 !important;
+  scroll-margin-inline: 0 !important;
+  overflow-anchor: none !important;
+}
+
+/* 防止xterm屏幕区域触发滚动 */
+.xterm-screen {
+  overflow-anchor: none !important;
+}
+
+.terminal-instance .xterm {
+  height: 100% !important;
+}
+
+.terminal-instance .xterm .xterm-viewport {
+  overflow-y: auto !important;
+  scrollbar-width: thin;
 }

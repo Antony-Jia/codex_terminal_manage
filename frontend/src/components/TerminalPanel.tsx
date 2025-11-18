@@ -40,14 +40,24 @@ interface SessionRuntime {
   status: TerminalStatus;
 }
 
-const safeWrite = (term: Terminal, text: string) => {
+const safeWrite = (term: Terminal, text: string, callback?: () => void) => {
   if (!text) {
+    if (callback) {
+      callback();
+    }
     return;
   }
   try {
-    term.write(text);
+    if (callback) {
+      term.write(text, callback);
+    } else {
+      term.write(text);
+    }
   } catch (error) {
     console.warn("terminal write skipped", error);
+    if (callback) {
+      callback();
+    }
   }
 };
 
@@ -58,6 +68,7 @@ const createRuntime = (id: string): SessionRuntime => {
     scrollback: 5000,
     fontFamily: '"Cascadia Code", "Fira Code", monospace',
     convertEol: false,
+    scrollOnUserInput: true,
     theme: {
       background: "#0f172a",
       foreground: "#f8fafc",
@@ -138,14 +149,15 @@ const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange 
       if (!text) {
         return;
       }
-      safeWrite(runtime.term, text);
-      // 自动滚动到底部,防止输入内容上移
-      requestAnimationFrame(() => {
-        try {
-          runtime.term.scrollToBottom();
-        } catch (error) {
-          console.warn("scroll to bottom skipped", error);
-        }
+      safeWrite(runtime.term, text, () => {
+        // 自动滚动到底部,防止输入内容上移
+        requestAnimationFrame(() => {
+          try {
+            runtime.term.scrollToBottom();
+          } catch (error) {
+            console.warn("scroll to bottom skipped", error);
+          }
+        });
       });
     };
     if (typeof raw === "string") {
@@ -195,13 +207,12 @@ const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange 
         const disposable = runtime.term.onData((data) => {
           if (runtime.socket?.readyState === WebSocket.OPEN) {
             runtime.socket.send(data);
-            requestAnimationFrame(() => {
-              try {
-                runtime.term.scrollToBottom();
-              } catch (error) {
-                console.warn("scroll to bottom skipped", error);
-              }
-            });
+            // 立即滚动到底部，保持输入在可视区域
+            try {
+              runtime.term.scrollToBottom();
+            } catch (error) {
+              console.warn("scroll to bottom skipped", error);
+            }
           }
         });
         runtime.disposables.push(disposable);
@@ -246,6 +257,24 @@ const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange 
     if (!runtime.attached) {
       runtime.term.open(node);
       runtime.attached = true;
+      // 设置textarea的样式，防止滚动跳转
+      const textarea = runtime.term.textarea;
+      if (textarea) {
+        textarea.style.scrollMargin = '0px';
+        textarea.style.position = 'absolute';
+        // 监听textarea的focus事件，阻止页面滚动
+        textarea.addEventListener('focus', (e) => {
+          e.preventDefault();
+          // 保持terminal内部滚动到底部
+          setTimeout(() => {
+            try {
+              runtime.term.scrollToBottom();
+            } catch (error) {
+              console.warn('scroll on focus skipped', error);
+            }
+          }, 0);
+        }, { passive: false });
+      }
     }
     try {
       runtime.fitAddon.fit();
@@ -278,14 +307,15 @@ const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange 
         }
         if (content) {
           runtime.term.reset();
-          safeWrite(runtime.term, content);
-          requestAnimationFrame(() => {
-            try {
-              runtime.fitAddon.fit();
-              runtime.term.scrollToBottom();
-            } catch (error) {
-              console.warn("history fit skipped", error);
-            }
+          safeWrite(runtime.term, content, () => {
+            requestAnimationFrame(() => {
+              try {
+                runtime.fitAddon.fit();
+                runtime.term.scrollToBottom();
+              } catch (error) {
+                console.warn("history fit skipped", error);
+              }
+            });
           });
         } else {
           runtime.term.reset();
@@ -341,10 +371,19 @@ const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange 
     if (!runtime) {
       return;
     }
-    runtime.term.focus();
+    // 阻止浏览器自动滚动到焦点元素，防止页面跳转
+    const textarea = runtime.term.textarea;
+    if (textarea) {
+      // 使用preventScroll防止浏览器自动滚动
+      textarea.focus({ preventScroll: true });
+    } else {
+      // fallback: 如果textarea不可用，直接focus terminal
+      runtime.term.focus();
+    }
     requestAnimationFrame(() => {
       try {
         runtime.fitAddon.fit();
+        runtime.term.scrollToBottom();
       } catch (error) {
         console.warn("active fit skipped", error);
       }
@@ -430,19 +469,16 @@ const ReplayTerminal = ({ logContent, note }: ReplayTerminalProps) => {
     }
     term.reset();
     const intro = note ? `${note}\r\n\r\n` : "以下内容为历史日志：\r\n\r\n";
-    safeWrite(term, intro);
-    if (logContent) {
-      safeWrite(term, logContent);
-    } else {
-      safeWrite(term, "暂无日志内容。");
-    }
-    requestAnimationFrame(() => {
-      try {
-        fitRef.current?.fit();
-        term.scrollToBottom();
-      } catch (error) {
-        console.warn("replay resize skipped", error);
-      }
+    const body = logContent ?? "暂无日志内容。";
+    safeWrite(term, intro + body, () => {
+      requestAnimationFrame(() => {
+        try {
+          fitRef.current?.fit();
+          term.scrollToBottom();
+        } catch (error) {
+          console.warn("replay resize skipped", error);
+        }
+      });
     });
   }, [logContent, note]);
 
