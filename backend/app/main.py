@@ -339,6 +339,11 @@ async def session_socket(websocket: WebSocket, session_id: str):
                 msg_type = payload.get("type")
                 if msg_type == "input":
                     await session_manager.send_input(session_id, payload.get("data", ""))
+                elif msg_type == "resize":
+                    cols = payload.get("cols")
+                    rows = payload.get("rows")
+                    if isinstance(cols, int) and isinstance(rows, int):
+                        await session_manager.resize_session(session_id, cols, rows)
                 elif msg_type == "ping":
                     await websocket.send_json({"type": "pong"})
                 continue

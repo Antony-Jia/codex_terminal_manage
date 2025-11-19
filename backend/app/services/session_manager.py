@@ -230,6 +230,21 @@ class SessionManager:
         async with context.lock:
             await self._process_input(context, data)
 
+    async def resize_session(self, session_id: str, cols: int, rows: int) -> None:
+        context = self.get(session_id)
+        if context.pty is None:
+            return
+        loop = asyncio.get_running_loop()
+
+        def _resize() -> None:
+            try:
+                if context.pty:
+                    context.pty.setwinsize(cols, rows)
+            except Exception:
+                pass
+
+        await loop.run_in_executor(None, _resize)
+
     async def _process_input(self, context: SessionContext, data: str) -> None:
         if not data or context.pty is None:
             return

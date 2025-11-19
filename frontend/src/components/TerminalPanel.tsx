@@ -1,7 +1,7 @@
 import { message } from "antd";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Terminal, type IDisposable } from "xterm";
-import { FitAddon } from "xterm-addon-fit";
+import { Terminal, type IDisposable } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
 import { api, websocketUrl } from "../api";
 
 export type TerminalStatus = "idle" | "connecting" | "connected" | "closed" | "error";
@@ -79,7 +79,7 @@ const createRuntime = (id: string): SessionRuntime => {
   });
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
-  return {
+  const runtime: SessionRuntime = {
     id,
     term,
     fitAddon,
@@ -90,6 +90,20 @@ const createRuntime = (id: string): SessionRuntime => {
     container: null,
     status: "idle",
   };
+
+  term.onResize((size) => {
+    if (runtime.socket?.readyState === WebSocket.OPEN) {
+      runtime.socket.send(
+        JSON.stringify({
+          type: "resize",
+          cols: size.cols,
+          rows: size.rows,
+        })
+      );
+    }
+  });
+
+  return runtime;
 };
 
 const TerminalPanel = ({
@@ -150,12 +164,20 @@ const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange 
         return;
       }
       safeWrite(runtime.term, text, () => {
-        // 自动滚动到底部,防止输入内容上移
+        // 在写入完成后延迟滚动，让渲染完成后再滚动到底部
         requestAnimationFrame(() => {
           try {
             runtime.term.scrollToBottom();
+            // 双重保险：再次确保滚动到底部
+            requestAnimationFrame(() => {
+              try {
+                runtime.term.scrollToBottom();
+              } catch (error) {
+                console.warn("delayed scroll skipped", error);
+              }
+            });
           } catch (error) {
-            console.warn("scroll to bottom skipped", error);
+            console.warn("immediate scroll skipped", error);
           }
         });
       });
@@ -192,6 +214,15 @@ const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange 
       updateStatus(runtime.id, "connecting");
       socket.onopen = () => {
         updateStatus(runtime.id, "connected");
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(
+            JSON.stringify({
+              type: "resize",
+              cols: runtime.term.cols,
+              rows: runtime.term.rows,
+            })
+          );
+        }
       };
       socket.onmessage = (event) => handleIncoming(runtime, event.data);
       socket.onclose = () => {
@@ -207,12 +238,14 @@ const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange 
         const disposable = runtime.term.onData((data) => {
           if (runtime.socket?.readyState === WebSocket.OPEN) {
             runtime.socket.send(data);
-            // 立即滚动到底部，保持输入在可视区域
-            try {
-              runtime.term.scrollToBottom();
-            } catch (error) {
-              console.warn("scroll to bottom skipped", error);
-            }
+            // 延迟滚动到底部，确保渲染完成后再滚动
+            requestAnimationFrame(() => {
+              try {
+                runtime.term.scrollToBottom();
+              } catch (error) {
+                console.warn("scroll to bottom skipped", error);
+              }
+            });
           }
         });
         runtime.disposables.push(disposable);

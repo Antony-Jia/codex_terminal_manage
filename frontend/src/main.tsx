@@ -2,7 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import "antd/dist/reset.css";
-import "xterm/css/xterm.css";
+import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
