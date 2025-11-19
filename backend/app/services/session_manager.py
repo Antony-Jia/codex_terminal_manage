@@ -76,6 +76,10 @@ class SessionManager:
         command.extend(profile.args_list())
         env = self._base_env.copy()
         env.update(profile.env_dict())
+        # Force UTF-8 encoding for Python and general environment
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["LANG"] = "C.UTF-8"
+        
         log_dir = settings.resolved_logs_dir / session_id
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / "raw.log"
@@ -97,6 +101,15 @@ class SessionManager:
         context.sockets.add(websocket)
         if context.pty is None:
             await self._launch_process(context)
+            # Attempt to set console code page to UTF-8 (65001)
+            # This is fire-and-forget to avoid blocking
+            await self._write_to_pty(context, "chcp 65001\r")
+            # Clear the screen to remove the chcp output and give a fresh start
+            # We use cls (CMD) or clear (PowerShell), sending both is messy but effective enough usually
+            # Or just let the user see it. A clean prompt is better.
+            # Let's just send a newline to ensure we are on a fresh line
+            await self._write_to_pty(context, "\r")
+            
         return context
 
     async def detach(self, session_id: str, websocket: WebSocket) -> None:
@@ -163,6 +176,8 @@ class SessionManager:
         if not context.pty:
             return
         loop = asyncio.get_running_loop()
+        import codecs
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
         def _read() -> str | bytes:
             if not context.pty:
@@ -179,9 +194,16 @@ class SessionManager:
                     break
                 await asyncio.sleep(0.05)
                 continue
-            text = chunk.decode("utf-8", errors="ignore") if isinstance(chunk, bytes) else chunk
-            self._write_log(context, text)
-            await self._broadcast_text(context, text)
+            
+            text = ""
+            if isinstance(chunk, bytes):
+                text = decoder.decode(chunk, final=False)
+            else:
+                text = chunk
+                
+            if text:
+                self._write_log(context, text)
+                await self._broadcast_text(context, text)
 
     async def _monitor(self, context: SessionContext) -> None:
         if not context.pty:
@@ -234,20 +256,23 @@ class SessionManager:
         context = self.get(session_id)
         if context.pty is None:
             return
+        print(f"[SessionManager] Resizing session {session_id} to {cols}x{rows}")
         loop = asyncio.get_running_loop()
 
         def _resize() -> None:
             try:
                 if context.pty:
                     context.pty.setwinsize(cols, rows)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[SessionManager] Resize failed: {e}")
 
         await loop.run_in_executor(None, _resize)
 
     async def _process_input(self, context: SessionContext, data: str) -> None:
         if not data or context.pty is None:
             return
+        
+        # Use a local buffer to batch non-special characters for efficiency
         buffer: list[str] = []
 
         async def flush_buffer() -> None:
@@ -256,22 +281,58 @@ class SessionManager:
                 buffer.clear()
 
         for char in data:
-            if char in {"\u0008", "\u007f"}:  # Backspace/delete
+            # Handle Backspace/Delete
+            if char in {"\u0008", "\u007f"}:
                 context.command_buffer = context.command_buffer[:-1]
                 buffer.append(char)
                 continue
-            if char == "\u0003":  # Ctrl + C
+            
+            # Handle Ctrl+C
+            if char == "\u0003":
                 context.command_buffer = ""
                 buffer.append(char)
                 await flush_buffer()
                 continue
+                
+            # Handle Newline/Enter
             if char in {"\r", "\n"}:
                 await flush_buffer()
                 await self._handle_newline(context, char)
                 continue
+                
+            # Normal characters
             context.command_buffer += char
             buffer.append(char)
+            
         await flush_buffer()
+
+    async def _check_git_diff(
+        self,
+        context: SessionContext,
+        before_snapshot: dict,
+        command_label: Optional[str],
+    ) -> None:
+        if before_snapshot is None:
+            return
+            
+        # Wait for command execution (non-blocking to the main input loop)
+        await asyncio.sleep(settings.git_diff_delay)
+        
+        if not context.pty:
+            return
+            
+        try:
+            after_snapshot = await git.get_git_status(context.cwd)
+            if after_snapshot is None:
+                context.cwd_has_git = False
+                return
+                
+            delta = git.diff_status(before_snapshot, after_snapshot)
+            if any(delta.values()):
+                diff_text = git.format_delta(delta, command_label)
+                await self._broadcast_text(context, diff_text + "\r\n")
+        except Exception as e:
+            print(f"[SessionManager] Git check error: {e}")
 
     async def _handle_newline(
         self,
@@ -280,26 +341,31 @@ class SessionManager:
     ) -> None:
         before_snapshot = None
         command_label = None
+        
+        # Only trigger git logic on Return (\r)
         if char == "\r":
             if not context.cwd_has_git and (context.cwd / ".git").exists():
                 context.cwd_has_git = True
+                
             if context.cwd_has_git:
-                before_snapshot = await git.get_git_status(context.cwd)
-                command_label = context.command_buffer.strip()
+                try:
+                    # This might still take a few ms, but unavoidable if we want "before" state
+                    before_snapshot = await git.get_git_status(context.cwd)
+                    command_label = context.command_buffer.strip()
+                except Exception:
+                    pass
             context.command_buffer = ""
+            
+        # Write the actual newline character(s) to PTY
+        # Windows PTY typically expects \r for Enter
         payload = "\r" if char == "\r" else char
         await self._write_to_pty(context, payload)
-        if before_snapshot is None:
-            return
-        await asyncio.sleep(settings.git_diff_delay)
-        after_snapshot = await git.get_git_status(context.cwd)
-        if after_snapshot is None:
-            context.cwd_has_git = False
-            return
-        delta = git.diff_status(before_snapshot, after_snapshot)
-        if any(delta.values()):
-            diff_text = git.format_delta(delta, command_label)
-            await self._broadcast_text(context, diff_text + "\r\n")
+        
+        # Schedule the git check as a background task
+        if before_snapshot:
+            asyncio.create_task(
+                self._check_git_diff(context, before_snapshot, command_label)
+            )
 
     async def _write_to_pty(self, context: SessionContext, data: str) -> None:
         if not data or context.pty is None:

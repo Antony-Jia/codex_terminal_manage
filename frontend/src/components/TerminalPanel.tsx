@@ -91,16 +91,23 @@ const createRuntime = (id: string): SessionRuntime => {
     status: "idle",
   };
 
+  let resizeTimeout: number | undefined;
   term.onResize((size) => {
-    if (runtime.socket?.readyState === WebSocket.OPEN) {
-      runtime.socket.send(
-        JSON.stringify({
-          type: "resize",
-          cols: size.cols,
-          rows: size.rows,
-        })
-      );
+    if (resizeTimeout) {
+      window.clearTimeout(resizeTimeout);
     }
+    resizeTimeout = window.setTimeout(() => {
+      console.log("Terminal resized:", size);
+      if (runtime.socket?.readyState === WebSocket.OPEN && size.cols > 0 && size.rows > 0) {
+        runtime.socket.send(
+          JSON.stringify({
+            type: "resize",
+            cols: size.cols,
+            rows: size.rows,
+          })
+        );
+      }
+    }, 66);
   });
 
   return runtime;
@@ -214,15 +221,28 @@ const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange 
       updateStatus(runtime.id, "connecting");
       socket.onopen = () => {
         updateStatus(runtime.id, "connected");
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(
-            JSON.stringify({
-              type: "resize",
-              cols: runtime.term.cols,
-              rows: runtime.term.rows,
-            })
-          );
+        // Force a fit calculation to ensure we have the correct dimensions
+        try {
+            runtime.fitAddon.fit();
+        } catch (e) {
+            console.warn("Initial fit failed", e);
         }
+        
+        const sendResize = () => {
+          if (socket.readyState === WebSocket.OPEN && runtime.term.cols > 0 && runtime.term.rows > 0) {
+            console.log("Sending initial resize:", runtime.term.cols, runtime.term.rows);
+            socket.send(
+              JSON.stringify({
+                type: "resize",
+                cols: runtime.term.cols,
+                rows: runtime.term.rows,
+              })
+            );
+          }
+        };
+        sendResize();
+        // 再次延迟发送，以防初始化时尺寸不准确
+        setTimeout(sendResize, 500);
       };
       socket.onmessage = (event) => handleIncoming(runtime, event.data);
       socket.onclose = () => {

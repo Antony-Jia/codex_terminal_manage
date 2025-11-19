@@ -1,44 +1,41 @@
-# 停止所有占用8000端口的进程
-Write-Host "正在查找占用8000端口的进程..." -ForegroundColor Yellow
+# 简单暴力的重启脚本
+$ErrorActionPreference = "SilentlyContinue"
 
-$connections = netstat -ano | findstr :8000 | findstr LISTENING
-$pids = @()
-
-foreach ($line in $connections) {
-    if ($line -match '\s+(\d+)\s*$') {
-        $pid = $matches[1]
-        if ($pid -notin $pids) {
-            $pids += $pid
-        }
-    }
-}
-
-if ($pids.Count -eq 0) {
-    Write-Host "没有找到占用8000端口的进程" -ForegroundColor Green
-} else {
-    Write-Host "找到 $($pids.Count) 个进程占用8000端口: $($pids -join ', ')" -ForegroundColor Cyan
-    
-    foreach ($pid in $pids) {
+Write-Host "正在停止占用 8000 端口的进程..." -ForegroundColor Yellow
+$tcp = Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue
+if ($tcp) {
+    foreach ($conn in $tcp) {
         try {
-            $process = Get-Process -Id $pid -ErrorAction Stop
-            Write-Host "停止进程 $pid ($($process.ProcessName))..." -ForegroundColor Yellow
-            Stop-Process -Id $pid -Force
-            Write-Host "进程 $pid 已停止" -ForegroundColor Green
+            $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+            if ($proc) {
+                Write-Host "停止进程: $($proc.Id) ($($proc.ProcessName))" -ForegroundColor Cyan
+                Stop-Process -Id $proc.Id -Force
+            }
         } catch {
-            Write-Host "无法停止进程 $pid : $_" -ForegroundColor Red
+            Write-Host "无法停止进程: $_" -ForegroundColor Red
         }
     }
+} else {
+    Write-Host "端口 8000 未被占用" -ForegroundColor Green
 }
 
-# 等待端口释放
-Write-Host "等待端口释放..." -ForegroundColor Yellow
 Start-Sleep -Seconds 2
 
-# 激活conda环境并启动后端
-Write-Host "启动后端服务..." -ForegroundColor Cyan
-Set-Location -Path "$PSScriptRoot\backend"
+Write-Host "正在启动后端..." -ForegroundColor Yellow
+Set-Location "$PSScriptRoot\backend"
 
-# 使用conda运行
+# 尝试加载 Conda
+$conda_hook = "$env:USERPROFILE\anaconda3\shell\condabin\conda-hook.ps1"
+if (-not (Test-Path $conda_hook)) {
+    $conda_hook = "$env:USERPROFILE\miniconda3\shell\condabin\conda-hook.ps1"
+}
+
+if (Test-Path $conda_hook) {
+    & $conda_hook
+    conda activate terminal_manage
+} else {
+    Write-Host "未找到 Conda，尝试直接运行..." -ForegroundColor Yellow
+}
+
 $env:PYTHONIOENCODING = "utf-8"
-conda activate terminal_manage
 poetry run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload

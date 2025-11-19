@@ -6,6 +6,12 @@
   background-color: #f5f8ff;
 }
 
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
@@ -188,23 +194,5 @@ body {
 }
 
 .terminal-instance .xterm .xterm-viewport {
-  overflow-y: auto !important;
   scrollbar-width: thin;
-}
-
-/* 修复光标位置问题 - 确保 xterm-rows 容器不会因为滚动而偏移 */
-.terminal-instance .xterm .xterm-rows {
-  position: relative !important;
-  /* 禁止容器自身的滚动行为，让滚动由 xterm-viewport 处理 */
-  overflow: visible !important;
-}
-
-/* 确保光标层不受滚动影响 */
-.terminal-instance .xterm .xterm-cursor-layer {
-  position: absolute !important;
-}
-
-/* 防止文本层偏移 */
-.terminal-instance .xterm .xterm-text-layer {
-  position: absolute !important;
 }
