@@ -262,7 +262,7 @@ class SessionManager:
         def _resize() -> None:
             try:
                 if context.pty:
-                    context.pty.setwinsize(cols, rows)
+                    context.pty.setwinsize(rows, cols)
             except Exception as e:
                 print(f"[SessionManager] Resize failed: {e}")
 

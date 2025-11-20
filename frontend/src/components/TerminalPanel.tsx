@@ -65,6 +65,8 @@ const createRuntime = (id: string): SessionRuntime => {
   const term = new Terminal({
     cursorBlink: true,
     fontSize: 14,
+    lineHeight: 1.2,
+    rightClickSelectsWord: true,
     scrollback: 5000,
     fontFamily: '"Cascadia Code", "Fira Code", monospace',
     convertEol: false,
@@ -318,6 +320,14 @@ const LiveTerminalManager = ({ sessionId, sessionIds = [], note, onStatusChange 
     }
     try {
       runtime.fitAddon.fit();
+      // Double check fit after a short delay to ensure layout is settled
+      setTimeout(() => {
+        try {
+          runtime.fitAddon.fit();
+        } catch (e) {
+          // ignore
+        }
+      }, 100);
     } catch (error) {
       console.warn("fit skipped", error);
     }
@@ -484,6 +494,13 @@ const ReplayTerminal = ({ logContent, note }: ReplayTerminalProps) => {
       term.open(containerRef.current);
       try {
         fitAddon.fit();
+        setTimeout(() => {
+            try {
+                fitAddon.fit();
+            } catch (e) {
+                // ignore
+            }
+        }, 100);
       } catch (error) {
         console.warn("replay fit skipped", error);
       }
